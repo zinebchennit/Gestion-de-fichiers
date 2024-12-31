@@ -1,0 +1,227 @@
+{\rtf1\ansi\ansicpg1252\deff0\nouicompat\deflang1036{\fonttbl{\f0\fnil\fcharset0 Calibri;}}
+{\*\generator Riched20 10.0.22621}\viewkind4\uc1 
+\pard\sa200\sl276\slmult1\f0\fs22\lang12 // sgf.c\par
+#include "sgf.h"\par
+\par
+SecondaryMemory* initialize_memory(int total_blocks, int block_size) \{\par
+    SecondaryMemory* memory = malloc(sizeof(SecondaryMemory));\par
+    if (!memory) return NULL;\par
+\par
+    memory->total_blocks = total_blocks;\par
+    memory->block_size = block_size;\par
+    memory->num_files = 0;\par
+\par
+    // Initialize allocation table\par
+    memory->allocation_table = calloc(total_blocks, sizeof(bool));\par
+    if (!memory->allocation_table) \{\par
+        free(memory);\par
+        return NULL;\par
+    \}\par
+\par
+    // Initialize blocks\par
+    memory->blocks = calloc(total_blocks, sizeof(Block));\par
+    if (!memory->blocks) \{\par
+        free(memory->allocation_table);\par
+        free(memory);\par
+        return NULL;\par
+    \}\par
+\par
+    // Initialize file table\par
+    memory->file_table = calloc(MAX_FILES, sizeof(Metadata));\par
+    if (!memory->file_table) \{\par
+        free(memory->blocks);\par
+        free(memory->allocation_table);\par
+        free(memory);\par
+        return NULL;\par
+    \}\par
+\par
+    // Initialize each block's records array\par
+    for (int i = 0; i < total_blocks; i++) \{\par
+        memory->blocks[i].records = calloc(block_size, sizeof(Record));\par
+        memory->blocks[i].next_block = -1;\par
+        memory->blocks[i].num_records = 0;\par
+    \}\par
+\par
+    return memory;\par
+\}\par
+\par
+void cleanup_memory(SecondaryMemory* memory) \{\par
+    if (!memory) return;\par
+\par
+    // Free records in each block\par
+    for (int i = 0; i < memory->total_blocks; i++) \{\par
+        free(memory->blocks[i].records);\par
+    \}\par
+\par
+    free(memory->blocks);\par
+    free(memory->allocation_table);\par
+    free(memory->file_table);\par
+    free(memory);\par
+\}\par
+\par
+void create_file(SecondaryMemory* memory) \{\par
+    if (memory->num_files >= MAX_FILES) \{\par
+        printf("Maximum number of files reached\\n");\par
+        return;\par
+    \}\par
+\par
+    char filename[MAX_FILENAME];\par
+    int num_records;\par
+    int org_choice;\par
+\par
+    printf("Enter filename: ");\par
+    scanf("%s", filename);\par
+    printf("Enter number of records: ");\par
+    scanf("%d", &num_records);\par
+    printf("Choose organization (0=Contiguous, 1=Chained): ");\par
+    scanf("%d", &org_choice);\par
+\par
+    // Calculate required blocks\par
+    int records_per_block = memory->block_size;\par
+    int blocks_needed = (num_records + records_per_block - 1) / records_per_block;\par
+\par
+    // Find free blocks\par
+    int first_block = -1;\par
+    if (org_choice == CONTIGUOUS) \{\par
+        // Find contiguous blocks\par
+        int consecutive_free = 0;\par
+        for (int i = 0; i < memory->total_blocks; i++) \{\par
+            if (!memory->allocation_table[i]) \{\par
+                consecutive_free++;\par
+                if (consecutive_free == blocks_needed) \{\par
+                    first_block = i - blocks_needed + 1;\par
+                    break;\par
+                \}\par
+            \} else \{\par
+                consecutive_free = 0;\par
+            \}\par
+        \}\par
+    \} else \{\par
+        // Find any free blocks for chained organization\par
+        int blocks_found = 0;\par
+        int prev_block = -1;\par
+        for (int i = 0; i < memory->total_blocks && blocks_found < blocks_needed; i++) \{\par
+            if (!memory->allocation_table[i]) \{\par
+                if (first_block == -1) first_block = i;\par
+                if (prev_block != -1) \{\par
+                    memory->blocks[prev_block].next_block = i;\par
+                \}\par
+                prev_block = i;\par
+                blocks_found++;\par
+            \}\par
+        \}\par
+        if (prev_block != -1) \{\par
+            memory->blocks[prev_block].next_block = -1;\par
+        \}\par
+    \}\par
+\par
+    if (first_block == -1) \{\par
+        printf("Not enough space available\\n");\par
+        return;\par
+    \}\par
+\par
+    // Update metadata\par
+    Metadata* meta = &memory->file_table[memory->num_files];\par
+    strcpy(meta->filename, filename);\par
+    meta->num_blocks = blocks_needed;\par
+    meta->num_records = num_records;\par
+    meta->first_block = first_block;\par
+    meta->global_org = org_choice;\par
+    meta->internal_org = UNSORTED;\par
+\par
+    // Mark blocks as allocated\par
+    if (org_choice == CONTIGUOUS) \{\par
+        for (int i = 0; i < blocks_needed; i++) \{\par
+            memory->allocation_table[first_block + i] = true;\par
+        \}\par
+    \} else \{\par
+        int current = first_block;\par
+        while (current != -1) \{\par
+            memory->allocation_table[current] = true;\par
+            current = memory->blocks[current].next_block;\par
+        \}\par
+    \}\par
+\par
+    memory->num_files++;\par
+    printf("File created successfully\\n");\par
+\}\par
+\par
+void display_memory_state(SecondaryMemory* memory) \{\par
+    printf("\\nMemory State:\\n");\par
+    for (int i = 0; i < memory->total_blocks; i++) \{\par
+        if (memory->allocation_table[i]) \{\par
+            printf("\\033[1;31m[X]\\033[0m"); // Red for occupied\par
+        \} else \{\par
+            printf("\\033[1;32m[ ]\\033[0m"); // Green for free\par
+        \}\par
+        \par
+        if ((i + 1) % 10 == 0) printf("\\n");\par
+    \}\par
+    printf("\\n");\par
+\par
+    printf("\\nBlock Details:\\n");\par
+    for (int i = 0; i < memory->total_blocks; i++) \{\par
+        if (memory->allocation_table[i]) \{\par
+            // Find which file owns this block\par
+            for (int j = 0; j < memory->num_files; j++) \{\par
+                if (memory->file_table[j].first_block == i) \{\par
+                    printf("Block %d: File '%s' (%d records)\\n", \par
+                           i, \par
+                           memory->file_table[j].filename,\par
+                           memory->blocks[i].num_records);\par
+                \}\par
+            \}\par
+        \}\par
+    \}\par
+\}\par
+\par
+void display_metadata(SecondaryMemory* memory) \{\par
+    printf("\\nFile Metadata:\\n");\par
+    printf("%-20s %-12s %-12s %-12s %-15s %-15s\\n",\par
+           "Filename", "Blocks", "Records", "First Block", "Global Org", "Internal Org");\par
+    printf("--------------------------------------------------------------------------------\\n");\par
+\par
+    for (int i = 0; i < memory->num_files; i++) \{\par
+        Metadata* meta = &memory->file_table[i];\par
+        printf("%-20s %-12d %-12d %-12d %-15s %-15s\\n",\par
+               meta->filename,\par
+               meta->num_blocks,\par
+               meta->num_records,\par
+               meta->first_block,\par
+               meta->global_org == CONTIGUOUS ? "Contiguous" : "Chained",\par
+               meta->internal_org == SORTED ? "Sorted" : "Unsorted");\par
+    \}\par
+\}\par
+\par
+void handle_menu_choice(SecondaryMemory* memory) \{\par
+    int choice;\par
+    printf("\\nEnter your choice: ");\par
+    scanf("%d", &choice);\par
+\par
+    switch (choice) \{\par
+        case 1:\par
+            printf("Enter total blocks and block size: ");\par
+            int blocks, size;\par
+            scanf("%d %d", &blocks, &size);\par
+            memory = initialize_memory(blocks, size);\par
+            if (memory) printf("Memory initialized successfully\\n");\par
+            break;\par
+        case 2:\par
+            create_file(memory);\par
+            break;\par
+        case 3:\par
+            display_memory_state(memory);\par
+            break;\par
+        case 4:\par
+            display_metadata(memory);\par
+            break;\par
+        // Add other menu options here\par
+        case 0:\par
+            cleanup_memory(memory);\par
+            exit(0);\par
+        default:\par
+            printf("Invalid choice\\n");\par
+    \}\par
+\}\par
+}
+ 
